@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
@@ -28,6 +29,7 @@ from airflowctl.api.client import ClientKind
 from airflowctl.api.datamodels.auth_generated import LoginResponse
 from airflowctl.ctl import cli_parser
 from airflowctl.ctl.commands import auth_command
+from airflowctl.ctl.utils import yaml
 
 
 class TestCliAuthCommands:
@@ -258,6 +260,20 @@ class TestCliAuthCommands:
 
 class TestListEnvs:
     parser = cli_parser.get_parser()
+
+    def _write_config(self, airflow_home: Path, env: str, api_url: str = "http://localhost:8080") -> Path:
+        config_path = airflow_home / f"{env}.json"
+        config_path.write_text(json.dumps({"api_url": api_url}))
+        return config_path
+
+    def _run_list_envs(self, monkeypatch, capsys, airflow_home: Path, *args: str) -> str:
+        monkeypatch.setenv("AIRFLOW_HOME", str(airflow_home))
+        parsed_args = self.parser.parse_args(["auth", "list-envs", *args])
+        auth_command.list_envs(parsed_args)
+        captured = capsys.readouterr()
+        assert "unrecognized arguments" not in captured.err
+        assert "invalid option" not in captured.err
+        return captured.out
 
     def test_list_envs_empty_airflow_home(self, monkeypatch):
         """Test list-envs with no AIRFLOW_HOME directory."""
@@ -495,3 +511,125 @@ class TestListEnvs:
             auth_command.list_envs(args)
 
             mock_get_password.assert_called_once_with("airflowctl", "api_token_prod.json.region")
+
+    def test_list_envs_json_default_row_keys_are_unchanged(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-default-row-keys-unchanged
+        self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(monkeypatch, capsys, tmp_path, "--output", "json")
+
+        rows = json.loads(output)
+        assert rows
+        assert all(list(row) == ["environment", "api_url", "status"] for row in rows)
+        assert all("config_path" not in row for row in rows)
+
+    def test_list_envs_show_path_json_includes_resolved_config_path(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-arg-auth-show-path-declared,c-list-envs-args-includes-show-path
+        # harness:criterion=c-show-path-json-includes-config-path,c-show-path-json-config-path-is-absolute
+        # harness:criterion=c-show-path-json-config-path-matches-file,c-config-path-column-order-after-status
+        config_path = self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "json"
+            )
+
+        rows = json.loads(output)
+        assert rows
+        row = next(row for row in rows if row["environment"] == "production")
+        assert list(row) == ["environment", "api_url", "status", "config_path"]
+        assert "config_path" in row
+        assert os.path.isabs(row["config_path"])
+        assert row["config_path"] == str(config_path.resolve())
+
+    def test_list_envs_show_path_plain_contains_resolved_config_path(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-show-path-plain-contains-path
+        config_path = self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "plain"
+            )
+
+        assert str(config_path.resolve()) in output
+
+    def test_list_envs_show_path_table_includes_config_path_column(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-show-path-table-includes-config-path-column
+        config_path = self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "table"
+            )
+
+        assert "config_path" in output
+        assert str(config_path.resolve()) in output
+
+    def test_list_envs_show_path_yaml_includes_resolved_config_path(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-show-path-yaml-includes-config-path
+        config_path = self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "yaml"
+            )
+
+        rows = yaml.safe_load(output)
+        assert rows
+        row = next(row for row in rows if row["environment"] == "production")
+        assert "config_path" in row
+        assert row["config_path"] == str(config_path.resolve())
+
+    @pytest.mark.parametrize("output_format", ["json", "yaml", "table", "plain"])
+    def test_list_envs_show_path_never_outputs_token(self, monkeypatch, capsys, tmp_path, output_format):
+        # harness:criterion=c-no-token-in-show-path-output
+        fake_token = "fake-secret-token-12345"
+        self._write_config(tmp_path, "production")
+
+        with patch("keyring.get_password", return_value=fake_token):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", output_format
+            )
+
+        assert fake_token not in output
+
+    def test_list_envs_show_path_excludes_debug_creds_files(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-debug-creds-files-excluded
+        self._write_config(tmp_path, "production")
+        (tmp_path / "debug_creds_test.json").write_text(
+            json.dumps({"api_token_test": "fake-secret-token-12345"})
+        )
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "json"
+            )
+
+        rows = json.loads(output)
+        assert rows
+        assert all("debug_creds_" not in row["environment"] for row in rows)
+        assert all("debug_creds_" not in row["config_path"] for row in rows)
+
+    def test_list_envs_show_path_excludes_generated_json_files(self, monkeypatch, capsys, tmp_path):
+        # harness:criterion=c-generated-json-files-excluded
+        self._write_config(tmp_path, "production")
+        (tmp_path / "myenv_generated.json").write_text(
+            json.dumps({"api_url": "http://localhost:8081"})
+        )
+
+        with patch("keyring.get_password", return_value="test_token"):
+            output = self._run_list_envs(
+                monkeypatch, capsys, tmp_path, "--show-path", "--output", "json"
+            )
+
+        rows = json.loads(output)
+        assert rows
+        assert all(not row["environment"].endswith("_generated") for row in rows)
+        assert all(not row["config_path"].endswith("_generated.json") for row in rows)
+
+    def test_release_notes_document_show_path_flag(self):
+        # harness:criterion=c-release-notes-updated
+        release_notes_path = Path(__file__).parents[4] / "RELEASE_NOTES.rst"
+
+        assert "--show-path" in release_notes_path.read_text()
