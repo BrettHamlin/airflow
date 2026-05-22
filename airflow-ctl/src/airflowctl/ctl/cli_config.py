@@ -254,6 +254,13 @@ ARG_AUTH_SKIP_KEYRING = Arg(
     action="store_true",
     help="Skip storing credentials in keyring",
 )
+ARG_AUTH_SHOW_PATH = Arg(
+    flags=("--show-path",),
+    dest="show_path",
+    default=False,
+    action="store_true",
+    help="Show the config file path for each environment",
+)
 ARG_AUTH_PASSWORD = Arg(
     flags=("--password",),
     type=str,
@@ -912,7 +919,7 @@ AUTH_COMMANDS = (
         help="List all CLI environments that the user has logged into",
         description="List all CLI environments with their authentication status",
         func=lazy_load_command("airflowctl.ctl.commands.auth_command.list_envs"),
-        args=(ARG_OUTPUT,),
+        args=(ARG_OUTPUT, ARG_AUTH_SHOW_PATH),
     ),
     ActionCommand(
         name="token",
