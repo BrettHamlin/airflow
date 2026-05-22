@@ -1,0 +1,82 @@
+version: "1"
+
+# gridfire_template_version: stage3-py-monorepo/v1
+
+github:
+  owner: BrettHamlin
+  repo: airflow
+  base_branch: "main"
+
+reviewer_dispatch:
+  strategy: progressive
+  clustering:
+    mode: lsp_preferred
+    regex_fallback: true
+
+reviewers:
+  - name: python-workspace-boundary-contracts
+    file: .harness/agents/python-workspace-boundary-contracts.md
+    description: Checks Python monorepo package ownership, dependency boundaries, generated-client boundaries, and scoped build/test impact.
+    path_hints: ["pyproject.toml", "uv.lock", "airflow-ctl/**", "airflow-core/**", "task-sdk/**", "providers/**", "**/*.py"]
+    language_hints: [python, toml, yaml, json]
+    mandatory_triggers: ["workspace", "package", "dependency", "import", "generated", "api", "client", "provider", "scope"]
+    passing_grade: C
+    max_retries: 5
+
+  - name: python-cross-package-contracts
+    file: .harness/agents/python-cross-package-contracts.md
+    description: Checks Python cross-package API/client/schema contract drift across workspace packages.
+    path_hints: ["airflow-ctl/**", "airflow-core/**", "task-sdk/**", "providers/**", "**/*.py", "**/*.yaml", "**/*.json"]
+    language_hints: [python, yaml, json, openapi, toml]
+    mandatory_triggers: ["api", "schema", "client", "operation", "response", "request", "generated", "contract", "sdk"]
+    passing_grade: C
+    max_retries: 5
+
+codegen:
+  cli_provider: codex-cli
+  default_model: gpt-5.5
+
+stages:
+  planner:
+    explore_model: gpt-5.5
+  code_gen_feature:
+    model: gpt-5.5
+    timeout_s: 21600
+  code_gen_test:
+    model: gpt-5.5
+  code_gen_e2e_test:
+    model: gpt-5.5
+    timeout_s: 21600
+
+ci:
+  provider: github-actions
+  # Branch/ref where the Gridfire workflow files are installed. Change
+  # this for repos whose default branch is not "main".
+  workflow_ref: "main"
+  build:
+    workflow: ".github/workflows/gridfire-build.yml"
+    timeout_sec: 3600
+  test:
+    workflow: ".github/workflows/gridfire-test.yml"
+    timeout_sec: 3600
+  failure_extraction:
+    - source: annotations
+    - source: junit-xml
+      path: "test-results/*.xml"
+    - source: ai-extract
+
+gates:
+  plan:
+    auto_approve: true
+  ac:
+    auto_approve: true
+  merge_review:
+    auto_approve: true
+
+inner_loop:
+  reviewer_per_max: 2
+  reviewer_total_max: 5
+  build_max: 3
+  test_max: 3
+  build_test_total_max: 5
+  budget_reset_on_user_changes: true

@@ -1,0 +1,32 @@
+name: Gridfire Test
+
+# gridfire_template_version: stage3-py-monorepo/v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Git ref to test
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          UV_VERSION=$(sed -n '/^name = "uv"$/{n;s/^version = "\(.*\)"$/\1/p;}' uv.lock)
+          if [[ -z "${UV_VERSION}" ]]; then
+            echo "Failed to extract uv version from uv.lock" >&2
+            exit 1
+          fi
+          python -m pip install "uv==${UV_VERSION}"
+      - name: Run scoped Airflow package tests
+        run: uv run --directory airflow-ctl --group dev pytest tests/airflow_ctl/ctl
