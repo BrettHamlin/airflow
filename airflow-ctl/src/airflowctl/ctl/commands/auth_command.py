@@ -187,13 +187,14 @@ def list_envs(args) -> None:
         if config_status != "ok":
             token_status = config_status
 
-        environments.append(
-            {
-                "environment": env_name,
-                "api_url": api_url,
-                "status": token_status,
-            }
-        )
+        environment = {
+            "environment": env_name,
+            "api_url": api_url,
+            "status": token_status,
+        }
+        if getattr(args, "show_path", False) and os.path.exists(config_path):
+            environment["config_path"] = os.path.abspath(config_path)
+        environments.append(environment)
 
     # Sort by environment name
     environments.sort(key=lambda x: x.get("environment", ""))

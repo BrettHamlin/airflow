@@ -28,6 +28,12 @@ Significant Changes
   ``--flag`` form. Follows the dev-list lazy consensus on airflowctl parameter
   style (see `<https://lists.apache.org/thread/m1qvcvow3l17ytv40vhslh40wn3rntrm>`_).
 
+Improvements
+^^^^^^^^^^^^
+
+- Add ``--show-path`` to ``airflowctl auth list-envs`` to include the absolute
+  config file path for each environment.
+
 airflowctl 0.1.4 (2026-04-18)
 -----------------------------
 
