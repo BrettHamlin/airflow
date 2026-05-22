@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
@@ -258,6 +259,155 @@ class TestCliAuthCommands:
 
 class TestListEnvs:
     parser = cli_parser.get_parser()
+
+    @staticmethod
+    def _write_env_config(airflow_home, env_name="production", api_url="http://localhost:8080"):
+        config_path = os.path.join(airflow_home, f"{env_name}.json")
+        with open(config_path, "w") as f:
+            json.dump({"api_url": api_url}, f)
+        return config_path
+
+    @staticmethod
+    def _capture_print_as_rows(args):
+        with patch("airflowctl.ctl.commands.auth_command.AirflowConsole") as mock_console_cls:
+            auth_command.list_envs(args)
+        print_as_kwargs = mock_console_cls.return_value.print_as.call_args.kwargs
+        return print_as_kwargs["data"]
+
+    def test_arg_auth_show_path_is_registered(self):
+        # harness:criterion=c-arg-auth-show-path-registered
+        from airflowctl.ctl.cli_config import ARG_AUTH_SHOW_PATH
+
+        assert ARG_AUTH_SHOW_PATH.kwargs.get("action") == "store_true"
+        assert ARG_AUTH_SHOW_PATH.kwargs.get("default") is False
+        assert ARG_AUTH_SHOW_PATH.kwargs.get("dest") == "show_path"
+
+    def test_list_envs_args_include_show_path(self):
+        # harness:criterion=c-list-envs-args-tuple-includes-show-path
+        from airflowctl.ctl.cli_config import ARG_AUTH_SHOW_PATH, ARG_OUTPUT, AUTH_COMMANDS
+
+        command = next(command for command in AUTH_COMMANDS if command.name == "list-envs")
+
+        assert ARG_AUTH_SHOW_PATH in command.args
+        assert ARG_OUTPUT in command.args
+
+    def test_release_notes_describe_show_path(self):
+        # harness:criterion=c-release-notes-updated
+        airflow_ctl_root = Path(__file__).resolve().parents[4]
+        release_notes = (airflow_ctl_root / "RELEASE_NOTES.rst").read_text()
+
+        assert "--show-path" in release_notes
+        assert "list-envs" in release_notes
+
+    def test_list_envs_default_rows_do_not_include_config_path(self, monkeypatch):
+        # harness:criterion=c-list-envs-default-row-shape,c-list-envs-default-output-no-config-path-json
+        with (
+            tempfile.TemporaryDirectory() as temp_airflow_home,
+            patch("keyring.get_password") as mock_get_password,
+        ):
+            monkeypatch.setenv("AIRFLOW_HOME", temp_airflow_home)
+            self._write_env_config(temp_airflow_home)
+            mock_get_password.return_value = "test_token"
+
+            args = self.parser.parse_args(["auth", "list-envs", "--output", "json"])
+            rows = self._capture_print_as_rows(args)
+
+        assert rows
+        for row in rows:
+            assert set(row) == {"environment", "api_url", "status"}
+            assert "config_path" not in row
+
+    @pytest.mark.parametrize("output", ["json", "yaml", "table"])
+    def test_list_envs_show_path_adds_config_path_to_rows(self, output, monkeypatch):
+        # harness:criterion=c-list-envs-show-path-json-row-has-config-path
+        # harness:criterion=c-list-envs-show-path-yaml-row-has-config-path
+        # harness:criterion=c-list-envs-show-path-table-row-has-config-path
+        with (
+            tempfile.TemporaryDirectory() as temp_airflow_home,
+            patch("keyring.get_password") as mock_get_password,
+        ):
+            monkeypatch.setenv("AIRFLOW_HOME", temp_airflow_home)
+            config_path = self._write_env_config(temp_airflow_home)
+            mock_get_password.return_value = "test_token"
+
+            args = self.parser.parse_args(["auth", "list-envs", "--show-path", "--output", output])
+            rows = self._capture_print_as_rows(args)
+
+        assert rows == [
+            {
+                "environment": "production",
+                "api_url": "http://localhost:8080",
+                "status": "authenticated",
+                "config_path": os.path.abspath(config_path),
+            }
+        ]
+
+    def test_list_envs_show_path_is_absolute_with_relative_airflow_home(self, monkeypatch, tmp_path):
+        # harness:criterion=c-list-envs-show-path-config-path-is-absolute
+        monkeypatch.chdir(tmp_path)
+        relative_airflow_home = "relative_airflow_home"
+        airflow_home = tmp_path / relative_airflow_home
+        airflow_home.mkdir()
+        monkeypatch.setenv("AIRFLOW_HOME", relative_airflow_home)
+
+        with patch("keyring.get_password") as mock_get_password:
+            self._write_env_config(str(airflow_home))
+            mock_get_password.return_value = "test_token"
+
+            args = self.parser.parse_args(["auth", "list-envs", "--show-path", "--output", "json"])
+            rows = self._capture_print_as_rows(args)
+
+        assert rows
+        for row in rows:
+            assert os.path.isabs(row["config_path"])
+
+    def test_list_envs_show_path_plain_output_includes_config_path(self, monkeypatch, capsys):
+        # harness:criterion=c-list-envs-show-path-plain-column-header
+        # harness:criterion=c-list-envs-show-path-plain-column-value
+        with (
+            tempfile.TemporaryDirectory() as temp_airflow_home,
+            patch("keyring.get_password") as mock_get_password,
+        ):
+            monkeypatch.setenv("AIRFLOW_HOME", temp_airflow_home)
+            config_path = self._write_env_config(temp_airflow_home)
+            mock_get_password.return_value = "test_token"
+
+            args = self.parser.parse_args(["auth", "list-envs", "--show-path", "--output", "plain"])
+            auth_command.list_envs(args)
+
+        output_lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert output_lines
+        assert "config_path" in output_lines[0]
+        assert os.path.abspath(config_path) in "\n".join(output_lines[1:])
+
+    def test_list_envs_show_path_keeps_special_files_filtered(self, monkeypatch):
+        # harness:criterion=c-list-envs-special-files-skipped-with-show-path
+        with (
+            tempfile.TemporaryDirectory() as temp_airflow_home,
+            patch("keyring.get_password") as mock_get_password,
+        ):
+            monkeypatch.setenv("AIRFLOW_HOME", temp_airflow_home)
+            self._write_env_config(temp_airflow_home)
+            for filename in ("debug_creds_test.json", "env_generated.json"):
+                with open(os.path.join(temp_airflow_home, filename), "w") as f:
+                    json.dump({"api_url": "http://localhost:8081"}, f)
+            mock_get_password.return_value = "test_token"
+
+            args = self.parser.parse_args(["auth", "list-envs", "--show-path", "--output", "json"])
+            rows = self._capture_print_as_rows(args)
+
+        basenames = [os.path.basename(row["config_path"]) for row in rows]
+        assert basenames == ["production.json"]
+        assert all(not basename.startswith("debug_creds_") for basename in basenames)
+        assert all(not basename.endswith("_generated.json") for basename in basenames)
+
+    def test_list_envs_help_shows_show_path(self, capsys):
+        # harness:criterion=c-list-envs-show-path-help-text-present
+        with pytest.raises(SystemExit) as ctx:
+            self.parser.parse_args(["auth", "list-envs", "--help"])
+
+        assert ctx.value.code == 0
+        assert "--show-path" in capsys.readouterr().out
 
     def test_list_envs_empty_airflow_home(self, monkeypatch):
         """Test list-envs with no AIRFLOW_HOME directory."""
